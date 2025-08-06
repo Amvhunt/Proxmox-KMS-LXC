@@ -6,12 +6,27 @@
 # ██╔══██║██║╚██╔╝██║░╚████╔╝░██╔══██║██║░░░██║██║╚████║░░░██║░░░
 # ██║░░██║██║░╚═╝░██║░░╚██╔╝░░██║░░██║╚██████╔╝██║░╚███║░░░██║░░░
 # ╚═╝░░╚═╝╚═╝░░░░░╚═╝░░░╚═╝░░░╚═╝░░╚═╝░╚═════╝░╚═╝░░╚══╝░░░╚═╝░░░
-#             Amvhunt - Universal KMS LXC Installer (Premium)
+#         Amvhunt - Universal KMS LXC Installer
 #==================================================================================
 
 set -e
 
-#---- ASCII LOGO
+# ===== ПАРАМЕТРЫ ПО УМОЛЧАНИЮ =====
+OS_TEMPLATE="ubuntu-22.04-standard_22.04-1_amd64.tar.zst"
+TEMPLATE_STORAGE="local"
+CT_STORAGE="local-lvm"
+CTID=120
+HOSTNAME="amvhunt-kms"
+MEM=256
+DISK=2
+BRIDGE="vmbr0"
+NET_CONF="ip=dhcp"
+PASSWORD="kms-server"
+VLMCS_PORT=1688
+WEB_PORT=8000
+ALLOWED_SUBNET="192.168.1.0/24"
+
+# -------- ЛОГО ----------
 cat <<"EOF"
 ░█████╗░███╗░░░███╗██╗░░░██╗██╗░░██╗██╗░░░██╗███╗░░██╗████████╗
 ██╔══██╗████╗░████║██║░░░██║██║░░██║██║░░░██║████╗░██║╚══██╔══╝
@@ -23,106 +38,48 @@ cat <<"EOF"
 EOF
 
 echo
-echo "[INFO] This script deploys a premium KMS LXC with firewall & premium web UI."
+echo "OS Template: $OS_TEMPLATE (optimal for KMS LXC on Proxmox)"
 echo
 
-#---- CHOOSE STORAGE FOR TEMPLATE AND CT
-read -rp "Available storage (for templates): " -e -i "local" TEMPLATE_STORAGE
-read -rp "Available storage (for rootfs/containers): " -e -i "local-lvm" CT_STORAGE
-
-#---- STATIC OR DHCP IP
-read -rp "Use static IP? (y/n) [n]: " STATIC_ANSWER
-if [[ "${STATIC_ANSWER,,}" =~ ^y ]]; then
-  read -rp "Enter static IPv4 address (e.g., 192.168.1.99/24): " CT_IP
-  read -rp "Enter gateway (e.g., 192.168.1.1): " CT_GATEWAY
-  NET_CONF="ip=${CT_IP},gw=${CT_GATEWAY}"
-else
-  NET_CONF="ip=dhcp"
+# ==== (СКИП ВЫБОР, ЕСЛИ ХОЧЕШЬ — ОСТАВЬ ПОЛЬЗОВАТЕЛЮ ВОЗМОЖНОСТЬ ЗАМЕНИТЬ) ====
+read -rp "Press Enter to use default ($OS_TEMPLATE) or enter another: " INPUT_OS
+if [[ -n "$INPUT_OS" ]]; then
+    OS_TEMPLATE="$INPUT_OS"
 fi
 
-#---- BRIDGE
-read -rp "Network bridge [vmbr0]: " -e -i "vmbr0" BRIDGE
-
-#---- FIREWALL SOURCE SUBNET (по умолчанию 192.168.1.0/24)
-read -rp "Allow KMS/Web only for subnet (e.g., 192.168.1.0/24): " -e -i "192.168.1.0/24" ALLOWED_SUBNET
-
-#---- ПАРАМЕТРЫ
-CTID=120
-HOSTNAME="amvhunt-kms"
-MEM=256
-DISK=2
-PASSWORD="kms-server"
-IMAGE_NAME="ubuntu-22.04-standard_22.04-1_amd64.tar.zst"
-VLMCS_PORT=1688
-WEB_PORT=8000
-
-#---- CHECKS
+# ---- ПРОВЕРКА PROXMOX ----
 if ! command -v pveversion >/dev/null; then
   echo "[ERROR] Run on Proxmox host!"
   exit 1
 fi
 
-#---- DOWNLOAD LXC TEMPLATE IF NEEDED
-if ! pveam list $TEMPLATE_STORAGE | grep -q "$IMAGE_NAME"; then
-  echo "[INFO] Downloading LXC template to $TEMPLATE_STORAGE: $IMAGE_NAME"
+# ---- СКАЧАТЬ ОБРАЗ, ЕСЛИ НУЖНО ----
+if ! pveam list $TEMPLATE_STORAGE | grep -q "$OS_TEMPLATE"; then
+  echo "[INFO] Downloading LXC template to $TEMPLATE_STORAGE: $OS_TEMPLATE"
   pveam update
-  pveam download "$TEMPLATE_STORAGE" "$IMAGE_NAME"
+  pveam download "$TEMPLATE_STORAGE" "$OS_TEMPLATE"
 fi
 
-#---- REMOVE OLD CONTAINER IF EXISTS
+# ---- УДАЛЕНИЕ СТАРОГО КОНТЕЙНЕРА ----
 if pct status "$CTID" &>/dev/null; then
   echo "[WARN] CT $CTID exists — destroying"
   pct stop "$CTID" || true
   pct destroy "$CTID"
 fi
 
-#---- CREATE CONTAINER
+# ---- СОЗДАНИЕ КОНТЕЙНЕРА ----
 echo "[INFO] Creating CT $CTID"
-pct create "$CTID" "$TEMPLATE_STORAGE:vztmpl/$IMAGE_NAME" \
+pct create "$CTID" "$TEMPLATE_STORAGE:vztmpl/$OS_TEMPLATE" \
   -hostname "$HOSTNAME" \
-  -net0 name=eth0,bridge="$BRIDGE",$NET_CONF \
+  -net0 name=eth0,bridge="$BRIDGE",$NET_CONF,firewall=1 \
   -memory "$MEM" -cores 1 -swap 0 \
   -rootfs "$CT_STORAGE:$DISK" \
   -unprivileged 1 \
   -features nesting=1 \
   -password "$PASSWORD" \
-  -onboot 1 \
-  -features fuse=1
+  -onboot 1
 
-#---- ENABLE FIREWALL & ALLOW ONLY SUBNET TO PORTS
-pct set "$CTID" -features fuse=1 -features nesting=1 -features keyctl=1
-pct set "$CTID" -features mount=1
-
-pct set "$CTID" -features "fuse=1,nesting=1,keyctl=1,mount=1" # for Proxmox 8.x
-pct set "$CTID" -features "fuse=1,nesting=1" # for Proxmox 7.x
-
-pct set "$CTID" -features fuse=1
-pct set "$CTID" -features nesting=1
-
-pct set "$CTID" -features "fuse=1,nesting=1,keyctl=1"
-
-pct set "$CTID" -features fuse=1
-
-pct set "$CTID" -features nesting=1
-
-pct set "$CTID" -features "fuse=1,nesting=1"
-
-pct set "$CTID" --features fuse=1,nesting=1
-pct set "$CTID" -features fuse=1
-pct set "$CTID" -features nesting=1
-
-pct set "$CTID" --onboot 1 --features fuse=1,nesting=1
-
-pct set "$CTID" --unprivileged 1 --memory "$MEM" --swap 0 --cores 1
-
-pct set "$CTID" --features fuse=1,nesting=1
-
-pct set "$CTID" --net0 "name=eth0,bridge=$BRIDGE,$NET_CONF,firewall=1"
-
-# Firewall rules
-pct set "$CTID" -features fuse=1,nesting=1
-pct set "$CTID" --net0 "name=eth0,bridge=$BRIDGE,$NET_CONF,firewall=1"
-
+# ---- FIREWALL ----
 cat >/etc/pve/firewall/$CTID.fw <<EOF
 [OPTIONS]
 enable: 1
@@ -133,11 +90,11 @@ IN ACCEPT -source $ALLOWED_SUBNET -dest port $WEB_PORT -proto tcp
 IN DROP
 EOF
 
-#---- START CT
+# ---- START CT ----
 pct start "$CTID"
 sleep 7
 
-echo "[INFO] Installing vlmcsd & web interface..."
+echo "[INFO] Installing vlmcsd & web interface in container..."
 pct exec "$CTID" -- bash -c "
 apt update -qq
 apt install -y git build-essential python3 python3-flask
