@@ -11,7 +11,7 @@ Best for research, farms, business, or test infrastructure.
 
 1. **Run this one-liner as root on your Proxmox host:**
    ```bash
-   bash -c "$(curl -fsSL https://raw.githubusercontent.com/Amvhunt/platinum-kms-lxc/main/proxmox-create-kms-lxc.sh)"
+   bash -c "$(curl -fsSL https://raw.githubusercontent.com/Amvhunt/Proxmox-KMS-LXC/refs/heads/main/proxmox-create-kms-lxc.sh)"
    ```
    - You can edit the script before running if you need to change container ID, RAM, disk size, or hostname.
 
