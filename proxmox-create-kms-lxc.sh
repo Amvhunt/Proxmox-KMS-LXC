@@ -12,9 +12,9 @@
 set -e
 
 # ===== ПАРАМЕТРЫ ПО УМОЛЧАНИЮ =====
-OS_TEMPLATE="ubuntu-22.04-standard_22.04-1_amd64.tar.zst"
-TEMPLATE_STORAGE="local"
-CT_STORAGE="local-lvm"
+DEFAULT_OS_TEMPLATE="ubuntu-22.04-standard_22.04-1_amd64.tar.zst"
+DEFAULT_TEMPLATE_STORAGE="local"
+DEFAULT_CT_STORAGE="local-lvm"
 HOSTNAME="amvhunt-kms"
 MEM=256
 DISK=2
@@ -24,18 +24,16 @@ PASSWORD="kms-server"
 VLMCS_PORT=1688
 WEB_PORT=8000
 
-# --------- CTID: найти первый реально свободный ---------
-if [[ -z "${CTID:-}" ]]; then
-  for ((i=100; i<10000; i++)); do
+# --- AUTO-SELECT CTID ---
+for ((i=100; i<10000; i++)); do
     if ! qm status "$i" &>/dev/null && ! pct status "$i" &>/dev/null; then
-      CTID=$i
-      echo "[INFO] Auto-selected first available CTID: $CTID"
-      break
+        CTID=$i
+        echo "[INFO] Auto-selected first available CTID: $CTID"
+        break
     fi
-  done
-fi
+done
 
-# -------- ЛОГО ----------
+# --- LOGO ---
 cat <<"EOF"
 ░█████╗░███╗░░░███╗██╗░░░██╗██╗░░██╗██╗░░░██╗███╗░░██╗████████╗
 ██╔══██╗████╗░████║██║░░░██║██║░░██║██║░░░██║████╗░██║╚══██╔══╝
@@ -47,29 +45,46 @@ cat <<"EOF"
 EOF
 
 echo
-echo "OS Template: $OS_TEMPLATE (optimal for KMS LXC on Proxmox)"
+echo "Default OS Template: $DEFAULT_OS_TEMPLATE"
 echo
 
-# ==== (Шаблон OS: можно дать пользователю выбрать другой) ====
-read -rp "Press Enter to use default ($OS_TEMPLATE) or enter another: " INPUT_OS
-if [[ -n "$INPUT_OS" ]]; then
-    OS_TEMPLATE="$INPUT_OS"
-fi
+# --- OS TEMPLATE CHOICE ---
+read -rp "Press Enter to use default ($DEFAULT_OS_TEMPLATE) or enter another: " OS_TEMPLATE
+OS_TEMPLATE=${OS_TEMPLATE:-$DEFAULT_OS_TEMPLATE}
 
-# ---- ПРОВЕРКА PROXMOX ----
+# --- TEMPLATE STORAGE CHOICE ---
+read -rp "Press Enter to use default storage for template ($DEFAULT_TEMPLATE_STORAGE) or enter another: " TEMPLATE_STORAGE
+TEMPLATE_STORAGE=${TEMPLATE_STORAGE:-$DEFAULT_TEMPLATE_STORAGE}
+
+# --- CONTAINER STORAGE CHOICE ---
+read -rp "Press Enter to use default container storage ($DEFAULT_CT_STORAGE) or enter another: " CT_STORAGE
+CT_STORAGE=${CT_STORAGE:-$DEFAULT_CT_STORAGE}
+
+# --- BRIDGE (NETWORK) CHOICE ---
+read -rp "Press Enter to use default bridge ($BRIDGE) or enter another: " INPUT_BRIDGE
+BRIDGE=${INPUT_BRIDGE:-$BRIDGE}
+
+# --- CHECK PROXMOX ---
 if ! command -v pveversion >/dev/null; then
   echo "[ERROR] Run on Proxmox host!"
   exit 1
 fi
 
-# ---- СКАЧАТЬ ОБРАЗ, ЕСЛИ НУЖНО ----
+# --- DOWNLOAD TEMPLATE IF NEEDED ---
 if ! pveam list $TEMPLATE_STORAGE | grep -q "$OS_TEMPLATE"; then
   echo "[INFO] Downloading LXC template to $TEMPLATE_STORAGE: $OS_TEMPLATE"
   pveam update
   pveam download "$TEMPLATE_STORAGE" "$OS_TEMPLATE"
 fi
 
-# ---- СОЗДАНИЕ КОНТЕЙНЕРА ----
+# --- REMOVE OLD CONTAINER (if exists) ---
+if pct status "$CTID" &>/dev/null; then
+  echo "[WARN] CT $CTID exists — destroying"
+  pct stop "$CTID" || true
+  pct destroy "$CTID"
+fi
+
+# --- CREATE CONTAINER ---
 echo "[INFO] Creating CT $CTID"
 pct create "$CTID" "$TEMPLATE_STORAGE:vztmpl/$OS_TEMPLATE" \
   -hostname "$HOSTNAME" \
@@ -81,13 +96,13 @@ pct create "$CTID" "$TEMPLATE_STORAGE:vztmpl/$OS_TEMPLATE" \
   -password "$PASSWORD" \
   -onboot 1
 
-# ---- АВТООПРЕДЕЛЕНИЕ ALLOWED_SUBNET ----
+# --- AUTO-DETECT ALLOWED_SUBNET ---
 BRIDGE_IP=$(ip -4 -o addr show dev "$BRIDGE" | awk '{print $4}')
 IFS="/." read -r i1 i2 i3 i4 mask <<<"$BRIDGE_IP"
 ALLOWED_SUBNET="$i1.$i2.$i3.0/24"
 echo "[INFO] Detected ALLOWED_SUBNET as $ALLOWED_SUBNET"
 
-# ---- FIREWALL ----
+# --- FIREWALL RULES ---
 cat >/etc/pve/firewall/$CTID.fw <<EOF
 [OPTIONS]
 enable: 1
@@ -98,7 +113,7 @@ IN ACCEPT -source $ALLOWED_SUBNET -dest port $WEB_PORT -proto tcp
 IN DROP
 EOF
 
-# ---- START CT ----
+# --- START CT ---
 pct start "$CTID"
 sleep 7
 
@@ -109,7 +124,7 @@ apt install -y git build-essential python3 python3-flask
 git clone https://github.com/Wind4/vlmcsd.git /opt/vlmcsd
 cd /opt/vlmcsd
 make
-ln -sf /opt/vlmcsd/bin/vlmcsd /usr/local/bin/vlmcsd
+install -m 755 bin/vlmcsd /usr/local/bin/vlmcsd
 cat >/etc/systemd/system/vlmcsd.service <<EOL
 [Unit]
 Description=vlmcsd KMS Server
@@ -163,15 +178,3 @@ systemctl enable --now amvhunt-web
 IP=$(pct exec "$CTID" -- hostname -I | awk '{print $1}')
 echo "========================================"
 echo "[OK] Amvhunt KMS LXC ready!"
-echo "KMS:         tcp://$IP:$VLMCS_PORT"
-echo "Web keys:    http://$IP:$WEB_PORT"
-echo "Use in Windows:"
-echo " slmgr /ipk KEY"
-echo " slmgr /skms $IP:$VLMCS_PORT"
-echo " slmgr /ato"
-echo "Check services:"
-echo " pct exec $CTID -- systemctl status vlmcsd"
-echo " pct exec $CTID -- systemctl status amvhunt-web"
-echo
-echo "Firewall restricts access to $ALLOWED_SUBNET only!"
-echo "========================================"
