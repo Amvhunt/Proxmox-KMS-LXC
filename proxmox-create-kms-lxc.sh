@@ -15,7 +15,7 @@ set -e
 OS_TEMPLATE="ubuntu-22.04-standard_22.04-1_amd64.tar.zst"
 TEMPLATE_STORAGE="local"
 CT_STORAGE="local-lvm"
-HOSTNAME="kms"
+HOSTNAME="amvhunt-kms"
 MEM=256
 DISK=2
 BRIDGE="vmbr0"
@@ -25,13 +25,15 @@ VLMCS_PORT=1688
 WEB_PORT=8000
 
 # --------- CTID: найти первый реально свободный ---------
-for ((i=100; i<10000; i++)); do
-    if ! pct status $i &>/dev/null; then
-        CTID=$i
-        echo "[INFO] First available CTID: $CTID"
-        break
+if [[ -z "${CTID:-}" ]]; then
+  for ((i=100; i<10000; i++)); do
+    if ! qm status "$i" &>/dev/null && ! pct status "$i" &>/dev/null; then
+      CTID=$i
+      echo "[INFO] Auto-selected first available CTID: $CTID"
+      break
     fi
-done
+  done
+fi
 
 # -------- ЛОГО ----------
 cat <<"EOF"
