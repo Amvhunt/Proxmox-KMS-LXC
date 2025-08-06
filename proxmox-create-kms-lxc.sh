@@ -6,7 +6,7 @@
 # ██╔══██║██║╚██╔╝██║░╚████╔╝░██╔══██║██║░░░██║██║╚████║░░░██║░░░
 # ██║░░██║██║░╚═╝░██║░░╚██╔╝░░██║░░██║╚██████╔╝██║░╚███║░░░██║░░░
 # ╚═╝░░╚═╝╚═╝░░░░░╚═╝░░░╚═╝░░░╚═╝░░╚═╝░╚═════╝░╚═╝░░╚══╝░░░╚═╝░░░
-#         Amvhunt - Universal KMS LXC Installer
+#         Amvhunt - Universal KMS LXC Installer (Premium)
 #==================================================================================
 
 set -e
@@ -15,7 +15,6 @@ set -e
 OS_TEMPLATE="ubuntu-22.04-standard_22.04-1_amd64.tar.zst"
 TEMPLATE_STORAGE="local"
 CT_STORAGE="local-lvm"
-CTID=120
 HOSTNAME="amvhunt-kms"
 MEM=256
 DISK=2
@@ -24,7 +23,11 @@ NET_CONF="ip=dhcp"
 PASSWORD="kms-server"
 VLMCS_PORT=1688
 WEB_PORT=8000
-ALLOWED_SUBNET="192.168.1.0/24"
+
+# --------- CTID: найти первый свободный от 100 до 999 ---------
+FIRST_FREE_CID=$(for i in {100..999}; do pct status $i &>/dev/null || { echo $i; break; }; done)
+CTID=${FIRST_FREE_CID:-120}
+echo "[INFO] First available CTID: $CTID"
 
 # -------- ЛОГО ----------
 cat <<"EOF"
@@ -41,7 +44,7 @@ echo
 echo "OS Template: $OS_TEMPLATE (optimal for KMS LXC on Proxmox)"
 echo
 
-# ==== (СКИП ВЫБОР, ЕСЛИ ХОЧЕШЬ — ОСТАВЬ ПОЛЬЗОВАТЕЛЮ ВОЗМОЖНОСТЬ ЗАМЕНИТЬ) ====
+# ==== (Шаблон OS: можно дать пользователю выбрать другой) ====
 read -rp "Press Enter to use default ($OS_TEMPLATE) or enter another: " INPUT_OS
 if [[ -n "$INPUT_OS" ]]; then
     OS_TEMPLATE="$INPUT_OS"
@@ -60,7 +63,7 @@ if ! pveam list $TEMPLATE_STORAGE | grep -q "$OS_TEMPLATE"; then
   pveam download "$TEMPLATE_STORAGE" "$OS_TEMPLATE"
 fi
 
-# ---- УДАЛЕНИЕ СТАРОГО КОНТЕЙНЕРА ----
+# ---- УДАЛЕНИЕ СТАРОГО КОНТЕЙНЕРА, ЕСЛИ СОВПАДАЕТ CTID ----
 if pct status "$CTID" &>/dev/null; then
   echo "[WARN] CT $CTID exists — destroying"
   pct stop "$CTID" || true
@@ -72,12 +75,18 @@ echo "[INFO] Creating CT $CTID"
 pct create "$CTID" "$TEMPLATE_STORAGE:vztmpl/$OS_TEMPLATE" \
   -hostname "$HOSTNAME" \
   -net0 name=eth0,bridge="$BRIDGE",$NET_CONF,firewall=1 \
-  -memory "$MEM" -cores 1 -swap 0 \
+  -memory "$MEM" -cores 1 -swap 512 \
   -rootfs "$CT_STORAGE:$DISK" \
   -unprivileged 1 \
   -features nesting=1 \
   -password "$PASSWORD" \
   -onboot 1
+
+# ---- АВТООПРЕДЕЛЕНИЕ ALLOWED_SUBNET ----
+BRIDGE_IP=$(ip -4 -o addr show dev "$BRIDGE" | awk '{print $4}')
+IFS="/." read -r i1 i2 i3 i4 mask <<<"$BRIDGE_IP"
+ALLOWED_SUBNET="$i1.$i2.$i3.0/24"
+echo "[INFO] Detected ALLOWED_SUBNET as $ALLOWED_SUBNET"
 
 # ---- FIREWALL ----
 cat >/etc/pve/firewall/$CTID.fw <<EOF
