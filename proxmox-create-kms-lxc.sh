@@ -20,14 +20,18 @@ MEM=256
 DISK=2
 BRIDGE="vmbr0"
 NET_CONF="ip=dhcp"
-PASSWORD="admin"
+PASSWORD="kms-server"
 VLMCS_PORT=1688
 WEB_PORT=8000
 
-# --------- CTID: найти первый свободный от 100 до 999 ---------
-FIRST_FREE_CID=$(for i in {100..999}; do pct status $i &>/dev/null || { echo $i; break; }; done)
-CTID=${FIRST_FREE_CID:-120}
-echo "[INFO] First available CTID: $CTID"
+# --------- CTID: найти первый реально свободный ---------
+for ((i=100; i<10000; i++)); do
+    if ! pct status $i &>/dev/null; then
+        CTID=$i
+        echo "[INFO] First available CTID: $CTID"
+        break
+    fi
+done
 
 # -------- ЛОГО ----------
 cat <<"EOF"
@@ -61,13 +65,6 @@ if ! pveam list $TEMPLATE_STORAGE | grep -q "$OS_TEMPLATE"; then
   echo "[INFO] Downloading LXC template to $TEMPLATE_STORAGE: $OS_TEMPLATE"
   pveam update
   pveam download "$TEMPLATE_STORAGE" "$OS_TEMPLATE"
-fi
-
-# ---- УДАЛЕНИЕ СТАРОГО КОНТЕЙНЕРА, ЕСЛИ СОВПАДАЕТ CTID ----
-if pct status "$CTID" &>/dev/null; then
-  echo "[WARN] CT $CTID exists — destroying"
-  pct stop "$CTID" || true
-  pct destroy "$CTID"
 fi
 
 # ---- СОЗДАНИЕ КОНТЕЙНЕРА ----
