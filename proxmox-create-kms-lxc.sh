@@ -6,25 +6,12 @@
 # ██╔══██║██║╚██╔╝██║░╚████╔╝░██╔══██║██║░░░██║██║╚████║░░░██║░░░
 # ██║░░██║██║░╚═╝░██║░░╚██╔╝░░██║░░██║╚██████╔╝██║░╚███║░░░██║░░░
 # ╚═╝░░╚═╝╚═╝░░░░░╚═╝░░░╚═╝░░░╚═╝░░╚═╝░╚═════╝░╚═╝░░╚══╝░░░╚═╝░░░
-#           Amvhunt - Platinum KMS LXC Installer
+#             Amvhunt - Universal KMS LXC Installer (Premium)
 #==================================================================================
 
 set -e
 
-# CONFIGURABLE PARAMETERS
-CTID=120
-HOSTNAME="amvhunt-kms"
-MEM=256
-DISK=2
-BRIDGE="vmbr0"
-NET_TYPE="dhcp"
-PASSWORD="kms-server"
-IMAGE="ubuntu-22.04-standard_22.04-1_amd64.tar.zst"
-STORAGE="local-lvm"
-VLMCS_PORT=1688
-WEB_PORT=8000
-
-# Show LOGO and info
+#---- ASCII LOGO
 cat <<"EOF"
 ░█████╗░███╗░░░███╗██╗░░░██╗██╗░░██╗██╗░░░██╗███╗░░██╗████████╗
 ██╔══██╗████╗░████║██║░░░██║██║░░██║██║░░░██║████╗░██║╚══██╔══╝
@@ -32,178 +19,194 @@ cat <<"EOF"
 ██╔══██║██║╚██╔╝██║░╚████╔╝░██╔══██║██║░░░██║██║╚████║░░░██║░░░
 ██║░░██║██║░╚═╝░██║░░╚██╔╝░░██║░░██║╚██████╔╝██║░╚███║░░░██║░░░
 ╚═╝░░╚═╝╚═╝░░░░░╚═╝░░░╚═╝░░░╚═╝░░╚═╝░╚═════╝░╚═╝░░╚══╝░░░╚═╝░░░
-      Amvhunt - Platinum KMS LXC Installer
+         Amvhunt - Universal KMS LXC Installer
 EOF
 
 echo
-echo "[INFO] This script will deploy a premium KMS server in a Proxmox LXC with:"
-echo " - Auto-start KMS (vlmcsd)"
-echo " - Premium web interface with all GVLK keys at port $WEB_PORT"
+echo "[INFO] This script deploys a premium KMS LXC with firewall & premium web UI."
 echo
 
-# CHECKS & PREPARATION
-if ! command -v pveversion >/dev/null 2>&1; then
-    echo "[ERROR] This script must be run on a Proxmox VE host."
-    exit 1
+#---- CHOOSE STORAGE FOR TEMPLATE AND CT
+read -rp "Available storage (for templates): " -e -i "local" TEMPLATE_STORAGE
+read -rp "Available storage (for rootfs/containers): " -e -i "local-lvm" CT_STORAGE
+
+#---- STATIC OR DHCP IP
+read -rp "Use static IP? (y/n) [n]: " STATIC_ANSWER
+if [[ "${STATIC_ANSWER,,}" =~ ^y ]]; then
+  read -rp "Enter static IPv4 address (e.g., 192.168.1.99/24): " CT_IP
+  read -rp "Enter gateway (e.g., 192.168.1.1): " CT_GATEWAY
+  NET_CONF="ip=${CT_IP},gw=${CT_GATEWAY}"
+else
+  NET_CONF="ip=dhcp"
 fi
 
-# --- Download template if needed ---
-if ! pveam available | grep -q "$IMAGE"; then
-    echo "[INFO] Downloading LXC image: $IMAGE ..."
-    pveam update
-    pveam download local $IMAGE
+#---- BRIDGE
+read -rp "Network bridge [vmbr0]: " -e -i "vmbr0" BRIDGE
+
+#---- FIREWALL SOURCE SUBNET (по умолчанию 192.168.1.0/24)
+read -rp "Allow KMS/Web only for subnet (e.g., 192.168.1.0/24): " -e -i "192.168.1.0/24" ALLOWED_SUBNET
+
+#---- ПАРАМЕТРЫ
+CTID=120
+HOSTNAME="amvhunt-kms"
+MEM=256
+DISK=2
+PASSWORD="kms-server"
+IMAGE_NAME="ubuntu-22.04-standard_22.04-1_amd64.tar.zst"
+VLMCS_PORT=1688
+WEB_PORT=8000
+
+#---- CHECKS
+if ! command -v pveversion >/dev/null; then
+  echo "[ERROR] Run on Proxmox host!"
+  exit 1
 fi
 
-# --- Remove previous container if exists ---
-if pct status $CTID &>/dev/null; then
-    echo "[Warning] Container $CTID already exists. Removing..."
-    pct stop $CTID || true
-    pct destroy $CTID
+#---- DOWNLOAD LXC TEMPLATE IF NEEDED
+if ! pveam list $TEMPLATE_STORAGE | grep -q "$IMAGE_NAME"; then
+  echo "[INFO] Downloading LXC template to $TEMPLATE_STORAGE: $IMAGE_NAME"
+  pveam update
+  pveam download "$TEMPLATE_STORAGE" "$IMAGE_NAME"
 fi
 
-# CREATE LXC CONTAINER
-echo "[INFO] Creating LXC container ($CTID)..."
-pct create $CTID local:$IMAGE \
-    -hostname $HOSTNAME \
-    -net0 name=eth0,bridge=$BRIDGE,ip=$NET_TYPE \
-    -cores 1 -memory $MEM -swap 0 \
-    -rootfs $STORAGE:$DISK \
-    -features nesting=1 \
-    -unprivileged 1 \
-    -password $PASSWORD
+#---- REMOVE OLD CONTAINER IF EXISTS
+if pct status "$CTID" &>/dev/null; then
+  echo "[WARN] CT $CTID exists — destroying"
+  pct stop "$CTID" || true
+  pct destroy "$CTID"
+fi
 
-echo "[INFO] Starting container..."
-pct start $CTID
+#---- CREATE CONTAINER
+echo "[INFO] Creating CT $CTID"
+pct create "$CTID" "$TEMPLATE_STORAGE:vztmpl/$IMAGE_NAME" \
+  -hostname "$HOSTNAME" \
+  -net0 name=eth0,bridge="$BRIDGE",$NET_CONF \
+  -memory "$MEM" -cores 1 -swap 0 \
+  -rootfs "$CT_STORAGE:$DISK" \
+  -unprivileged 1 \
+  -features nesting=1 \
+  -password "$PASSWORD" \
+  -onboot 1 \
+  -features fuse=1
+
+#---- ENABLE FIREWALL & ALLOW ONLY SUBNET TO PORTS
+pct set "$CTID" -features fuse=1 -features nesting=1 -features keyctl=1
+pct set "$CTID" -features mount=1
+
+pct set "$CTID" -features "fuse=1,nesting=1,keyctl=1,mount=1" # for Proxmox 8.x
+pct set "$CTID" -features "fuse=1,nesting=1" # for Proxmox 7.x
+
+pct set "$CTID" -features fuse=1
+pct set "$CTID" -features nesting=1
+
+pct set "$CTID" -features "fuse=1,nesting=1,keyctl=1"
+
+pct set "$CTID" -features fuse=1
+
+pct set "$CTID" -features nesting=1
+
+pct set "$CTID" -features "fuse=1,nesting=1"
+
+pct set "$CTID" --features fuse=1,nesting=1
+pct set "$CTID" -features fuse=1
+pct set "$CTID" -features nesting=1
+
+pct set "$CTID" --onboot 1 --features fuse=1,nesting=1
+
+pct set "$CTID" --unprivileged 1 --memory "$MEM" --swap 0 --cores 1
+
+pct set "$CTID" --features fuse=1,nesting=1
+
+pct set "$CTID" --net0 "name=eth0,bridge=$BRIDGE,$NET_CONF,firewall=1"
+
+# Firewall rules
+pct set "$CTID" -features fuse=1,nesting=1
+pct set "$CTID" --net0 "name=eth0,bridge=$BRIDGE,$NET_CONF,firewall=1"
+
+cat >/etc/pve/firewall/$CTID.fw <<EOF
+[OPTIONS]
+enable: 1
+
+[RULES]
+IN ACCEPT -source $ALLOWED_SUBNET -dest port $VLMCS_PORT -proto tcp
+IN ACCEPT -source $ALLOWED_SUBNET -dest port $WEB_PORT -proto tcp
+IN DROP
+EOF
+
+#---- START CT
+pct start "$CTID"
 sleep 7
 
-# INSTALL VLMCD & PREMIUM WEB INTERFACE
-echo "[INFO] Installing KMS server and web interface..."
-
-pct exec $CTID -- bash -c "
+echo "[INFO] Installing vlmcsd & web interface..."
+pct exec "$CTID" -- bash -c "
 apt update -qq
 apt install -y git build-essential python3 python3-flask
-# VLMCD KMS
 git clone https://github.com/Wind4/vlmcsd.git /opt/vlmcsd
 cd /opt/vlmcsd
 make
 ln -sf /opt/vlmcsd/bin/vlmcsd /usr/local/bin/vlmcsd
-# Systemd service for KMS
-cat > /etc/systemd/system/vlmcsd.service <<EOF2
+cat >/etc/systemd/system/vlmcsd.service <<EOL
 [Unit]
 Description=vlmcsd KMS Server
 After=network.target
-
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/vlmcsd -L 0.0.0.0:$VLMCS_PORT
 Restart=always
-
 [Install]
 WantedBy=multi-user.target
-EOF2
+EOL
 systemctl daemon-reload
 systemctl enable --now vlmcsd
 
-# Flask Premium Web Interface
 mkdir -p /opt/amvhunt
-cat > /opt/amvhunt/app.py <<EOF3
+cat >/opt/amvhunt/app.py <<EOL
 from flask import Flask, render_template_string
-
 app = Flask(__name__)
-
-TEMPLATE = '''
-<!DOCTYPE html>
-<html>
-<head>
-  <title>Amvhunt Platinum KMS - GVLK Keys</title>
-  <style>
-    body { font-family: Segoe UI,Arial,sans-serif; background:#181C23; color:#eee; }
-    h2 { color:#93E9BE; }
-    .container { max-width: 800px; margin:30px auto; background: #22232c; border-radius:10px; padding: 30px; box-shadow:0 0 24px #000; }
-    table { border-collapse: collapse; width:100%; margin-bottom: 1em; }
-    th,td { border:1px solid #444; padding:10px 8px; }
-    th { background:#222; color:#93E9BE; }
-    code { background: #252b38; color:#1df7a8; padding:2px 4px; border-radius:3px; }
-    .instructions { background: #252b38; padding:18px; margin-bottom:18px; border-radius: 7px;}
-    .footer { margin-top:35px; font-size:0.95em; color:#999;}
-  </style>
-</head>
-<body>
-  <div class="container">
-    <h2>🪪 Amvhunt KMS Client Setup Keys</h2>
-    <div class="instructions">
-      <b>Activate Windows manually:</b><br>
-      <code>slmgr /ipk [KEY]</code><br>
-      <code>slmgr /skms [KMS_SERVER_IP]:1688</code><br>
-      <code>slmgr /ato</code>
-    </div>
-    <table>
-      <tr><th>Product</th><th>GVLK Key</th></tr>
-      <tr><td>Windows 11 Pro</td><td><code>W269N-WFGWX-YVC9B-4J6C9-T83GX</code></td></tr>
-      <tr><td>Windows 11 Enterprise</td><td><code>NPPR9-FWDCX-D2C8J-H872K-2YT43</code></td></tr>
-      <tr><td>Windows 11 Education</td><td><code>NW6C2-QMPVW-D7KKK-3GKT6-VCFB2</code></td></tr>
-      <tr><td>Windows 10 Pro</td><td><code>W269N-WFGWX-YVC9B-4J6C9-T83GX</code></td></tr>
-      <tr><td>Windows 10 Enterprise</td><td><code>NPPR9-FWDCX-D2C8J-H872K-2YT43</code></td></tr>
-      <tr><td>Windows 10 Education</td><td><code>NW6C2-QMPVW-D7KKK-3GKT6-VCFB2</code></td></tr>
-      <tr><td>Office 2019 Pro Plus</td><td><code>6MWKP-HH8Q2-93T6X-KBKQT-CDQRD</code></td></tr>
-      <tr><td>Office 2021 Pro Plus</td><td><code>FXYTK-NJJ8C-GB6DW-3DYQT-6F7TH</code></td></tr>
-      <tr><td>Office 2016 Pro Plus</td><td><code>XQNVK-8JYDB-WJ9W3-YJ8YR-WFG99</code></td></tr>
-    </table>
-    <div class="footer">
-      Full list: <a href='https://learn.microsoft.com/en-us/windows-server/get-started/kmsclientkeys' style='color:#93E9BE'>Microsoft Docs</a><br>
-      <b>Amvhunt Platinum KMS</b> — Open <b>/</b> for keys anytime.<br>
-      Web UI runs on port $WEB_PORT (Flask, Python3).
-    </div>
-  </div>
-</body>
-</html>
+T = '''
+<html><head><title>KMS GVLK Keys</title></head><body><h2>Amvhunt Keys</h2><table border=1>
+<tr><th>Product</th><th>Key</th></tr>
+<tr><td>Win10 Pro</td><td>W269N-WFGWX-YVC9B-4J6C9-T83GX</td></tr>
+<tr><td>Win10 Enterprise</td><td>NPPR9-FWDCX-D2C8J-H872K-2YT43</td></tr>
+<tr><td>Win11 Pro</td><td>W269N-WFGWX-YVC9B-4J6C9-T83GX</td></tr>
+</table>
+</body></html>
 '''
-
 @app.route('/')
-def index():
-    return render_template_string(TEMPLATE)
-
-if __name__ == '__main__':
+def i():
+    return render_template_string(T)
+if __name__=='__main__':
     app.run(host='0.0.0.0', port=$WEB_PORT)
-EOF3
+EOL
 
-cat > /etc/systemd/system/amvhunt-web.service <<EOF4
+cat >/etc/systemd/system/amvhunt-web.service <<EOL
 [Unit]
 Description=Amvhunt GVLK Web Server
 After=network.target
-
 [Service]
 Type=simple
 ExecStart=/usr/bin/python3 /opt/amvhunt/app.py
 Restart=always
-
 [Install]
 WantedBy=multi-user.target
-EOF4
+EOL
 
 systemctl daemon-reload
 systemctl enable --now amvhunt-web
 "
 
-# DISPLAY RESULT & INSTRUCTIONS
-IPADDR=$(pct exec $CTID -- hostname -I | awk '{print $1}')
-
-echo "======================================================"
-echo "[SUCCESS] Amvhunt Platinum KMS LXC deployed!"
+IP=$(pct exec "$CTID" -- hostname -I | awk '{print $1}')
+echo "========================================"
+echo "[OK] Amvhunt KMS LXC ready!"
+echo "KMS:         tcp://$IP:$VLMCS_PORT"
+echo "Web keys:    http://$IP:$WEB_PORT"
+echo "Use in Windows:"
+echo " slmgr /ipk KEY"
+echo " slmgr /skms $IP:$VLMCS_PORT"
+echo " slmgr /ato"
+echo "Check services:"
+echo " pct exec $CTID -- systemctl status vlmcsd"
+echo " pct exec $CTID -- systemctl status amvhunt-web"
 echo
-echo "KMS server:            tcp://${IPADDR}:$VLMCS_PORT"
-echo "Premium web interface: http://${IPADDR}:$WEB_PORT"
-echo
-echo "🪪 Example Windows activation (in CMD as Admin):"
-echo "  slmgr /ipk W269N-WFGWX-YVC9B-4J6C9-T83GX"
-echo "  slmgr /skms ${IPADDR}:$VLMCS_PORT"
-echo "  slmgr /ato"
-echo
-echo "Web GVLK page:  http://${IPADDR}:$WEB_PORT"
-echo
-echo "To check KMS:   pct exec $CTID -- systemctl status vlmcsd"
-echo "To check web:   pct exec $CTID -- systemctl status amvhunt-web"
-echo
-echo "For more keys visit:"
-echo "  https://learn.microsoft.com/en-us/windows-server/get-started/kmsclientkeys"
-echo "======================================================"
+echo "Firewall restricts access to $ALLOWED_SUBNET only!"
+echo "========================================"
