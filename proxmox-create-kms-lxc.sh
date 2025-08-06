@@ -15,12 +15,12 @@ set -e
 OS_TEMPLATE="ubuntu-22.04-standard_22.04-1_amd64.tar.zst"
 TEMPLATE_STORAGE="local"
 CT_STORAGE="local-lvm"
-HOSTNAME="amvhunt-kms"
+HOSTNAME="kms"
 MEM=256
 DISK=2
 BRIDGE="vmbr0"
 NET_CONF="ip=dhcp"
-PASSWORD="kms-server"
+PASSWORD="admin"
 VLMCS_PORT=1688
 WEB_PORT=8000
 
